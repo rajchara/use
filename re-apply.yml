@@ -1,0 +1,376 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main, master]
+  workflow_call:
+    inputs:
+      tf_workspace:
+        required: true
+        type: string
+      aws_region:
+        required: false
+        type: string
+        default: "ap-southeast-2"
+      gh_repo:
+        type: string
+        required: true
+      databricks_account_id:
+        type: string
+        required: false
+      target_role_arn:
+        type: string
+        required: true
+      tag:
+        required: true
+        type: string
+      tf_dir:
+        required: true
+        type: string
+      tf_file:
+        required: true
+        type: string
+      cloud:
+        required: true
+        type: string
+      workspace_s3_bucket_name:
+        required: false
+        type: string
+      databricks_relay_endpoint_id:
+        required: false
+        type: string
+      databricks_workspace_endpoint_id:
+        required: false
+        type: string
+      databricks_workspace_id:
+        required: false
+        type: string
+      databricks_workspace_url:
+        required: false
+        type: string
+      azure_client_id:
+        required: false
+        type: string
+      azure_sub_id:
+        required: false
+        type : string
+      azure_tenant_id:
+        required: false
+        type: string
+      storage_account_name:
+        required: false
+        type: string
+      vnet_id:
+        required: false
+        type: string
+      subnet_id:
+        required: false
+        type: string
+
+    secrets:
+      RIOTINTO_ORG_TOKEN:
+        required: true
+      CUSTOM_GITHUB_TOKEN:
+        required: false
+      databricks_client_id:
+        required: false
+      databricks_client_secret:
+        required: false
+
+    outputs:
+      aws_databricks_workspace_id:
+        description: "AWS Databricks id"
+        value: ${{ jobs.aws-terraform-apply.outputs.databricks_workspace_id }}
+      azure_databricks_workspace_id:
+        description: "Azure Databricks id"
+        value: ${{ jobs.azure-terraform-apply.outputs.databricks_workspace_id }}
+      databricks_workspace_id:
+        description: "Databricks workspace id (AWS or Azure)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.databricks_workspace_id || jobs.azure-terraform-apply.outputs.databricks_workspace_id }}
+      databricks_workspace_url:
+        description: "Databricks workspace URL (AWS or Azure)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.databricks_workspace_url || jobs.azure-terraform-apply.outputs.databricks_workspace_url }}
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+jobs:
+
+################################################################################
+# AWS Terraform Apply
+################################################################################
+
+  aws-terraform-apply:
+    if: ${{ inputs.cloud == 'aws' }}
+    runs-on: ubuntu-latest
+
+    outputs:
+      databricks_workspace_id: ${{ steps.tfApply.outputs.databricks_workspace_id }}
+      databricks_workspace_url: ${{ steps.tfApply.outputs.databricks_workspace_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: rio-tinto/${{ inputs.gh_repo }}
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Configure GitHub credentials
+        run: |
+          git config --global url."https://${{ secrets.RIOTINTO_ORG_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git config --list
+        working-directory: "${{ inputs.tf_dir }}"
+
+      # Login to AWS
+      - name: OIDC Login to AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ inputs.target_role_arn }}
+          role-session-name: DNA-Automation-Github-Actions-Role
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3.1.1
+
+      - name: Initialize Terraform working directory
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform init
+
+      - name: Create or Select Workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          WORKSPACE="${{ inputs.tf_workspace }}"
+          
+          # Check if workspace exists
+          if terraform workspace list | grep -q "$WORKSPACE"; then
+            echo "Workspace $WORKSPACE already exists, selecting it"
+            terraform workspace select $WORKSPACE
+          else
+            echo "Creating new workspace $WORKSPACE"
+            terraform workspace new $WORKSPACE
+          fi
+
+      - name: Terraform Apply
+        if: ${{ inputs.databricks_account_id != '782ba817-b9bf-4033-9aa9-56bb80139fba' }}
+        env:
+          TF_VAR_github_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file=${{ inputs.tf_file }} -auto-approve
+          fi
+
+      - name: Terraform Apply Databricks Workspace
+        id: tfApply
+        if: ${{ inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ ! -f "tfplan" ]; then
+            terraform plan -var-file='${{ inputs.tf_file }}' \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -var 'databricks_workspace_endpoint_id=${{ inputs.databricks_workspace_endpoint_id }}' \
+            -var 'databricks_relay_endpoint_id=${{ inputs.databricks_relay_endpoint_id }}' \
+            -out=tfplan
+          fi
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -var 'databricks_workspace_endpoint_id=${{ inputs.databricks_workspace_endpoint_id }}' \
+            -var 'databricks_relay_endpoint_id=${{ inputs.databricks_relay_endpoint_id }}'
+          fi
+
+          echo "databricks_workspace_id=$(terraform output -raw databricks_workspace_id)" >> $GITHUB_OUTPUT
+          echo "databricks_workspace_url=$(terraform output -raw databricks_workspace_url)" >> $GITHUB_OUTPUT
+
+      - name: Terraform Apply Databricks Workspace Iam
+        if: ${{ inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace-iam' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -var 'databricks_workspace_id=${{ inputs.databricks_workspace_id }}' \
+            -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}'
+          fi
+
+      - name: Terraform Apply Databricks Catalogs
+        if: ${{ inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'catalogs' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}'
+          fi
+
+      - name: Terraform Apply Databricks Compute
+        if: ${{ inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'compute' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}'
+          fi
+
+################################################################################
+# Azure Terraform Apply
+################################################################################
+
+  azure-terraform-apply:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.cloud == 'az' }}
+
+    outputs:
+      databricks_workspace_id: ${{ steps.tf-apply-workspace.outputs.databricks_workspace_id }}
+      databricks_workspace_url: ${{ steps.tf-apply-workspace.outputs.databricks_workspace_url }}
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v4
+        with: 
+          repository: rio-tinto/${{ inputs.gh_repo }}
+          ref: ${{ inputs.tag || github.ref }}
+
+      # Configure Github Creds
+      - name: Configure GitHub credentials
+        run: |
+          git config --global url."https://${{ secrets.RIOTINTO_ORG_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git config --list
+        working-directory: "${{ inputs.tf_dir }}"  
+
+      # Authenticate to Lakehouse AWS Shared Account for statefile management
+      - name: Authenticate to Lakehouse shared account
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.target_role_arn }}
+          role-session-name: GithubActions-${{ github.event.repository.name }}-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+ 
+      # Authenticate to Azure using Service Principal
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ inputs.azure_client_id }}
+          tenant-id: ${{ inputs.azure_tenant_id }}
+          subscription-id: ${{ inputs.azure_sub_id }}
+
+      - name: Azure Account Show
+        run: |
+          az account show
+
+      # Install Terraform CLI
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3.1.1
+
+      # Initialize the Terraform working directory
+      - name: Initialize Terraform working directory
+        env: 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform init
+
+      # Create or Select Terraform workspace
+      - name: Create or Select Workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          WORKSPACE="${{ inputs.tf_workspace }}"
+
+          # Check if workspace exists
+          if terraform workspace list | grep -q "$WORKSPACE"; then
+            echo "Workspace $WORKSPACE already exists, selecting it"
+            terraform workspace select $WORKSPACE
+          else
+            echo "Creating new workspace $WORKSPACE"
+            terraform workspace new $WORKSPACE
+          fi
+
+      # Apply Terraform to deploy Azure Infra resources
+      - name: Terraform Apply (Azure Infra)
+        if: ${{ !inputs.databricks_account_id }}
+        id: tf-apply-azure-infra
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [ -f "tfplan" ]; then
+            terraform apply tfplan
+          else
+            terraform apply -var-file=${{ inputs.tf_file }} -auto-approve
+          fi
+
+      # Apply Terraform to deploy Databricks Workspace resources
+      - name: Terraform Apply (Databricks Workspace)
+        if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && endsWith(inputs.tf_dir, 'workspace') }}
+        id: tf-apply-workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+          -var 'databricks_account_id=${{ inputs.databricks_account_id }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}'
+
+          echo "databricks_workspace_id=$(terraform output -raw workspace_id)" >> $GITHUB_OUTPUT
+          echo "databricks_workspace_url=$(terraform output -raw workspace_url)" >> $GITHUB_OUTPUT
+
+      # Apply Terraform to deploy Databricks Non-Workspace resources
+      - name: Terraform Apply (Databricks Non-Workspace)
+        if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && !endsWith(inputs.tf_dir, 'workspace') }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [[ "${{ inputs.tf_dir }}" == "compute" || "${{ inputs.tf_dir }}" == "catalogs" ]]; then
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var databricks_workspace_url=${{ inputs.databricks_workspace_url }} \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}'
+          else
+            terraform apply -var-file='${{ inputs.tf_file }}' -auto-approve \
+            -var databricks_account_id=${{ inputs.databricks_account_id }} \
+            -var databricks_workspace_id=${{ inputs.databricks_workspace_id }} \
+            -var databricks_workspace_url=${{ inputs.databricks_workspace_url }} \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}'
+          fi
