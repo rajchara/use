@@ -1,0 +1,103 @@
+name: TF Outputs to Domain Integration
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      workspace_id:
+        required: true
+        type: string
+      workspace_url:
+        required: true
+        type: string
+      service_principal_ids:
+        required: true
+        type: string
+      vpc_relay_endpoint_id:
+        required: true
+        type: string
+      vpc_workspace_endpoint_id:
+        required: true
+        type: string
+      catalog_ids:
+        required: true
+        type: string
+      schema_ids:
+        required: true
+        type: string
+      external_location_ids:
+        required: true
+        type: string
+      volume_ids:
+        required: true
+        type: string
+      cluster_ids:
+        required: true
+        type: string
+      sql_warehouse_ids:
+        required: true
+        type: string
+      instance_profile_id:
+        required: true
+        type: string
+      target_role_arn:
+        required: true
+        type: string
+      vnet_id:
+        required: true
+        type: string
+      subnet_ids:
+        required: true
+        type: string
+      aws_region:
+        required: false
+        type: string
+        default: "ap-southeast-2"
+    outputs:
+      domain_config:
+        value: ${{ jobs.transform.outputs.domain_config }}
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+    outputs:
+      domain_config: ${{ steps.create-config.outputs.domain_config }}
+    steps:
+      - name: Create Complete Inventory
+        id: create-config
+        run: |
+          cat > securable-inventory-${{ inputs.environment }}.json << EOF
+          {
+            "workspace_id": "${{ inputs.workspace_id }}",
+            "workspace_url": "${{ inputs.workspace_url }}",
+            "service_principal_ids": ${{ inputs.service_principal_ids || 'null' }},
+            "vpc_relay_endpoint_id": "${{ inputs.vpc_relay_endpoint_id }}",
+            "vpc_workspace_endpoint_id": "${{ inputs.vpc_workspace_endpoint_id }}",
+            "catalog_ids": ${{ inputs.catalog_ids || 'null' }},
+            "schema_ids": ${{ inputs.schema_ids || 'null' }},
+            "external_location_ids": ${{ inputs.external_location_ids || 'null' }},
+            "volume_ids": ${{ inputs.volume_ids || 'null' }},
+            "cluster_ids": ${{ inputs.cluster_ids || 'null' }},
+            "sql_warehouse_ids": ${{ inputs.sql_warehouse_ids || 'null' }},
+            "instance_profile_id": "${{ inputs.instance_profile_id }}",
+            "vnet_id": "${{ inputs.vnet_id }}",
+            "subnet_ids": "${{ inputs.subnet_ids }}"
+          }
+          EOF
+          DOMAIN_CONFIG=$(cat securable-inventory-${{ inputs.environment }}.json | jq -c .)
+          echo "domain_config=$DOMAIN_CONFIG" >> $GITHUB_OUTPUT
+      - name: OIDC Login to AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: "arn:aws:iam::340752807214:role/DNA-Automation-Github-Actions-Role"
+          role-session-name: DNA-Automation-Github-Actions-Role
+          aws-region: ${{ inputs.aws_region }}
+      - name: Store in DynamoDB
+        run: |
+          cat securable-inventory-${{ inputs.environment }}.json | jq '. + {environment: "${{ inputs.environment }}", updated_at: "'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'"}' | \
+          jq 'to_entries | map({(.key): (if .value == null then {"NULL": true} elif (.value | type) == "string" then {"S": .value} elif (.value | type) == "array" then {"L": [.value[] | {"S": .}]} else {"S": (.value | tostring)} end)}) | add' > dynamodb-item.json
+          aws dynamodb put-item \
+            --table-name dynamodb-rtlh-di-aws-syd-prd-01 \
+            --item file://dynamodb-item.json \
+            --region ${{ inputs.aws_region }}
