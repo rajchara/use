@@ -90,6 +90,43 @@ on:
       databricks_workspace_url:
         description: "Databricks workspace URL (AWS or Azure)"
         value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.databricks_workspace_url || jobs.azure-terraform-apply.outputs.databricks_workspace_url }}
+      # Additional surfaced outputs for downstream jobs (AWS or Azure)
+      vnet_id:
+        description: "VNet ID (Azure) or empty (AWS)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.vnet_id || jobs.azure-terraform-apply.outputs.vnet_id }}
+      subnet_ids:
+        description: "Subnet IDs (JSON array/string)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.subnet_ids || jobs.azure-terraform-apply.outputs.subnet_ids }}
+      vpc_relay_endpoint_id:
+        description: "Private Relay Endpoint ID"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.vpc_relay_endpoint_id || jobs.azure-terraform-apply.outputs.vpc_relay_endpoint_id }}
+      vpc_workspace_endpoint_id:
+        description: "Workspace Private Endpoint ID"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.vpc_workspace_endpoint_id || jobs.azure-terraform-apply.outputs.vpc_workspace_endpoint_id }}
+      instance_profile_id:
+        description: "Instance Profile ID"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.instance_profile_id || jobs.azure-terraform-apply.outputs.instance_profile_id }}
+      catalog_ids:
+        description: "Unity Catalog IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.catalog_ids || jobs.azure-terraform-apply.outputs.catalog_ids }}
+      schema_ids:
+        description: "Unity Schema IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.schema_ids || jobs.azure-terraform-apply.outputs.schema_ids }}
+      external_location_ids:
+        description: "External Location IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.external_location_ids || jobs.azure-terraform-apply.outputs.external_location_ids }}
+      volume_ids:
+        description: "Volume IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.volume_ids || jobs.azure-terraform-apply.outputs.volume_ids }}
+      compute_cluster_ids:
+        description: "Compute Cluster IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.compute_cluster_ids || jobs.azure-terraform-apply.outputs.compute_cluster_ids }}
+      sql_warehouse_ids:
+        description: "SQL Warehouse IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.sql_warehouse_ids || jobs.azure-terraform-apply.outputs.sql_warehouse_ids }}
+      service_principal_ids:
+        description: "Service Principal IDs"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-apply.outputs.service_principal_ids || jobs.azure-terraform-apply.outputs.service_principal_ids }}
 
 permissions:
   contents: read
@@ -110,6 +147,19 @@ jobs:
     outputs:
       databricks_workspace_id: ${{ steps.tfApply.outputs.databricks_workspace_id }}
       databricks_workspace_url: ${{ steps.tfApply.outputs.databricks_workspace_url }}
+      # AWS outputs (empty for Azure modules)
+      vnet_id: ${{ steps.collect-aws-outputs.outputs.vnet_id }}
+      subnet_ids: ${{ steps.collect-aws-outputs.outputs.subnet_ids }}
+      vpc_relay_endpoint_id: ${{ steps.collect-aws-outputs.outputs.vpc_relay_endpoint_id }}
+      vpc_workspace_endpoint_id: ${{ steps.collect-aws-outputs.outputs.vpc_workspace_endpoint_id }}
+      instance_profile_id: ${{ steps.collect-aws-outputs.outputs.instance_profile_id }}
+      catalog_ids: ${{ steps.collect-aws-outputs.outputs.catalog_ids }}
+      schema_ids: ${{ steps.collect-aws-outputs.outputs.schema_ids }}
+      external_location_ids: ${{ steps.collect-aws-outputs.outputs.external_location_ids }}
+      volume_ids: ${{ steps.collect-aws-outputs.outputs.volume_ids }}
+      compute_cluster_ids: ${{ steps.collect-aws-outputs.outputs.compute_cluster_ids }}
+      sql_warehouse_ids: ${{ steps.collect-aws-outputs.outputs.sql_warehouse_ids }}
+      service_principal_ids: ${{ steps.collect-aws-outputs.outputs.service_principal_ids }}
 
     steps:
       - name: Checkout
@@ -255,6 +305,72 @@ jobs:
             -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}'
           fi
 
+      - name: Collect AWS Terraform outputs
+        id: collect-aws-outputs
+        if: ${{ always() }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          echo "=== Collecting AWS outputs for tf_dir: ${{ inputs.tf_dir }} ==="
+          
+          # List all available terraform outputs first
+          echo "Available terraform outputs:"
+          terraform output 2>/dev/null || echo "No outputs available"
+          echo "Raw terraform output command:"
+          terraform output
+          
+          # Networking outputs
+          VNET_ID=$(terraform output -raw vnet_id 2>/dev/null || echo "")
+          SUBNET_IDS=$(terraform output -json subnet_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id 2>/dev/null || echo "")
+          WS_EP=$(terraform output -raw vpc_workspace_endpoint_id 2>/dev/null || echo "")
+
+          # Identity outputs
+          INSTANCE_PROFILE_ID=$(terraform output -raw access_connector_id 2>/dev/null || echo "")
+
+          # Catalogs outputs
+          CATALOG_IDS=$(terraform output -json catalog_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SCHEMA_IDS=$(terraform output -json schema_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          EXT_LOC_IDS=$(terraform output -json external_location_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          VOLUME_IDS=$(terraform output -json volume_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Compute outputs
+          CLUSTER_IDS=$(terraform output -json compute_cluster_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SQL_WH_IDS=$(terraform output -json sql_warehouse_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Workspace permissions outputs
+          SP_IDS=$(terraform output -json service_principal_map 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Debug: Show what we collected
+          echo "=== Collected AWS values ==="
+          echo "VNET_ID: '$VNET_ID'"
+          echo "SUBNET_IDS: '$SUBNET_IDS'"
+          echo "RELAY_EP: '$RELAY_EP'"
+          echo "WS_EP: '$WS_EP'"
+          echo "INSTANCE_PROFILE_ID: '$INSTANCE_PROFILE_ID'"
+          echo "CATALOG_IDS: '$CATALOG_IDS'"
+          echo "SCHEMA_IDS: '$SCHEMA_IDS'"
+          echo "EXT_LOC_IDS: '$EXT_LOC_IDS'"
+          echo "VOLUME_IDS: '$VOLUME_IDS'"
+          echo "CLUSTER_IDS: '$CLUSTER_IDS'"
+          echo "SQL_WH_IDS: '$SQL_WH_IDS'"
+          echo "SP_IDS: '$SP_IDS'"
+
+          # Always output all values, even if empty/null
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
+          echo "instance_profile_id=$INSTANCE_PROFILE_ID" >> $GITHUB_OUTPUT
+          echo "catalog_ids=$CATALOG_IDS" >> $GITHUB_OUTPUT
+          echo "schema_ids=$SCHEMA_IDS" >> $GITHUB_OUTPUT
+          echo "external_location_ids=$EXT_LOC_IDS" >> $GITHUB_OUTPUT
+          echo "volume_ids=$VOLUME_IDS" >> $GITHUB_OUTPUT
+          echo "compute_cluster_ids=$CLUSTER_IDS" >> $GITHUB_OUTPUT
+          echo "sql_warehouse_ids=$SQL_WH_IDS" >> $GITHUB_OUTPUT
+          echo "service_principal_ids=$SP_IDS" >> $GITHUB_OUTPUT
+          
+          echo "=== AWS Outputs written to GITHUB_OUTPUT ==="
+
 ################################################################################
 # Azure Terraform Apply
 ################################################################################
@@ -266,6 +382,19 @@ jobs:
     outputs:
       databricks_workspace_id: ${{ steps.tf-apply-workspace.outputs.databricks_workspace_id }}
       databricks_workspace_url: ${{ steps.tf-apply-workspace.outputs.databricks_workspace_url }}
+      # Collected outputs from apply steps
+      vnet_id: ${{ steps.tf-apply-azure-infra.outputs.vnet_id || steps.tf-apply-workspace.outputs.vnet_id || steps.tf-apply-non-workspace.outputs.vnet_id }}
+      subnet_ids: ${{ steps.tf-apply-azure-infra.outputs.subnet_ids || steps.tf-apply-workspace.outputs.subnet_ids || steps.tf-apply-non-workspace.outputs.subnet_ids }}
+      vpc_relay_endpoint_id: ${{ steps.tf-apply-azure-infra.outputs.vpc_relay_endpoint_id || steps.tf-apply-workspace.outputs.vpc_relay_endpoint_id || steps.tf-apply-non-workspace.outputs.vpc_relay_endpoint_id }}
+      vpc_workspace_endpoint_id: ${{ steps.tf-apply-azure-infra.outputs.vpc_workspace_endpoint_id || steps.tf-apply-workspace.outputs.vpc_workspace_endpoint_id || steps.tf-apply-non-workspace.outputs.vpc_workspace_endpoint_id }}
+      instance_profile_id: ${{ steps.tf-apply-azure-infra.outputs.instance_profile_id || steps.tf-apply-workspace.outputs.instance_profile_id || steps.tf-apply-non-workspace.outputs.instance_profile_id }}
+      catalog_ids: ${{ steps.tf-apply-azure-infra.outputs.catalog_ids || steps.tf-apply-workspace.outputs.catalog_ids || steps.tf-apply-non-workspace.outputs.catalog_ids }}
+      schema_ids: ${{ steps.tf-apply-azure-infra.outputs.schema_ids || steps.tf-apply-workspace.outputs.schema_ids || steps.tf-apply-non-workspace.outputs.schema_ids }}
+      external_location_ids: ${{ steps.tf-apply-azure-infra.outputs.external_location_ids || steps.tf-apply-workspace.outputs.external_location_ids || steps.tf-apply-non-workspace.outputs.external_location_ids }}
+      volume_ids: ${{ steps.tf-apply-azure-infra.outputs.volume_ids || steps.tf-apply-workspace.outputs.volume_ids || steps.tf-apply-non-workspace.outputs.volume_ids }}
+      compute_cluster_ids: ${{ steps.tf-apply-azure-infra.outputs.compute_cluster_ids || steps.tf-apply-workspace.outputs.compute_cluster_ids || steps.tf-apply-non-workspace.outputs.compute_cluster_ids }}
+      sql_warehouse_ids: ${{ steps.tf-apply-azure-infra.outputs.sql_warehouse_ids || steps.tf-apply-workspace.outputs.sql_warehouse_ids || steps.tf-apply-non-workspace.outputs.sql_warehouse_ids }}
+      service_principal_ids: ${{ steps.tf-apply-azure-infra.outputs.service_principal_ids || steps.tf-apply-workspace.outputs.service_principal_ids || steps.tf-apply-non-workspace.outputs.service_principal_ids }}
 
     steps:
       # Checkout the repository
@@ -341,6 +470,41 @@ jobs:
           else
             terraform apply -var-file=${{ inputs.tf_file }} -auto-approve
           fi
+          
+          # Collect networking outputs
+          if terraform output vnet_id >/dev/null 2>&1; then
+            VNET_ID=$(terraform output -raw vnet_id)
+          else
+            VNET_ID=""
+          fi
+          
+          if terraform output subnet_ids >/dev/null 2>&1; then
+            SUBNET_IDS_RAW=$(terraform output -raw subnet_ids 2>/dev/null || echo "")
+            if [ -n "$SUBNET_IDS_RAW" ]; then
+              SUBNET_IDS="$SUBNET_IDS_RAW"
+            else
+              SUBNET_IDS=$(terraform output -json subnet_ids | jq -c .)
+            fi
+          else
+            SUBNET_IDS="null"
+          fi
+          
+          if terraform output vpc_relay_endpoint_id >/dev/null 2>&1; then
+            RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id)
+          else
+            RELAY_EP=""
+          fi
+          
+          if terraform output vpc_workspace_endpoint_id >/dev/null 2>&1; then
+            WS_EP=$(terraform output -raw vpc_workspace_endpoint_id)
+          else
+            WS_EP=""
+          fi
+          
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
 
       # Apply Terraform to deploy Databricks Workspace resources
       - name: Terraform Apply (Databricks Workspace)
@@ -356,8 +520,121 @@ jobs:
           echo "databricks_workspace_id=$(terraform output -raw workspace_id)" >> $GITHUB_OUTPUT
           echo "databricks_workspace_url=$(terraform output -raw workspace_url)" >> $GITHUB_OUTPUT
 
+          # Optionally surface workspace private endpoint id if present
+          VPE=$(terraform output -raw vpc_workspace_endpoint_id 2>/dev/null || echo "")
+          if [ -n "$VPE" ]; then
+            echo "vpc_workspace_endpoint_id=$VPE" >> $GITHUB_OUTPUT
+          fi
+          
+          # Collect all workspace outputs
+          if terraform output vnet_id >/dev/null 2>&1; then
+            VNET_ID=$(terraform output -raw vnet_id)
+          else
+            VNET_ID=""
+          fi
+          
+          if terraform output subnet_ids >/dev/null 2>&1; then
+            SUBNET_IDS_RAW=$(terraform output -raw subnet_ids 2>/dev/null || echo "")
+            if [ -n "$SUBNET_IDS_RAW" ]; then
+              SUBNET_IDS="$SUBNET_IDS_RAW"
+            else
+              SUBNET_IDS=$(terraform output -json subnet_ids | jq -c .)
+            fi
+          else
+            SUBNET_IDS="null"
+          fi
+          
+          if terraform output vpc_relay_endpoint_id >/dev/null 2>&1; then
+            RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id)
+          else
+            RELAY_EP=""
+          fi
+          
+          if terraform output vpc_workspace_endpoint_id >/dev/null 2>&1; then
+            WS_EP=$(terraform output -raw vpc_workspace_endpoint_id)
+          else
+            WS_EP=""
+          fi
+          
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
+          echo "instance_profile_id=$(terraform output -raw access_connector_id 2>/dev/null || echo "")" >> $GITHUB_OUTPUT
+          echo "catalog_ids=$(terraform output -json catalog_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "schema_ids=$(terraform output -json schema_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "external_location_ids=$(terraform output -json external_location_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "volume_ids=$(terraform output -json volume_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "compute_cluster_ids=$(terraform output -json compute_cluster_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "sql_warehouse_ids=$(terraform output -json sql_warehouse_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "service_principal_ids=$(terraform output -json service_principal_map 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+
+      # Collect outputs for workspace modules
+      - name: Collect Workspace Terraform outputs
+        id: collect-workspace-outputs
+        if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && endsWith(inputs.tf_dir, 'workspace') }}
+        run: |
+          echo "=== WORKSPACE STEP STARTED: Collect Workspace Terraform outputs ==="
+          echo "Current directory: $(pwd)"
+          echo "Target tf_dir: ${{ inputs.tf_dir }}"
+          cd ${{ inputs.tf_dir }}
+          echo "After cd, current directory: $(pwd)"
+          echo "=== Collecting workspace outputs for tf_dir: ${{ inputs.tf_dir }} ==="
+          
+          # List all available terraform outputs first
+          echo "Available terraform outputs:"
+          terraform output 2>/dev/null || echo "No outputs available"
+          echo "Raw terraform output command:"
+          terraform output
+          
+          # Collect all outputs (workspace-specific and general)
+          VNET_ID=$(terraform output -raw vnet_id 2>/dev/null || echo "")
+          SUBNET_IDS=$(terraform output -json subnet_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id 2>/dev/null || echo "")
+          WS_EP=$(terraform output -raw vpc_workspace_endpoint_id 2>/dev/null || echo "")
+          INSTANCE_PROFILE_ID=$(terraform output -raw instance_profile_id 2>/dev/null || echo "")
+          CATALOG_IDS=$(terraform output -json catalog_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SCHEMA_IDS=$(terraform output -json schema_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          EXT_LOC_IDS=$(terraform output -json external_location_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          VOLUME_IDS=$(terraform output -json volume_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          CLUSTER_IDS=$(terraform output -json compute_cluster_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SQL_WH_IDS=$(terraform output -json sql_warehouse_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SP_IDS=$(terraform output -json service_principal_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Debug: Show what we collected
+          echo "=== Collected workspace values ==="
+          echo "VNET_ID: '$VNET_ID'"
+          echo "SUBNET_IDS: '$SUBNET_IDS'"
+          echo "RELAY_EP: '$RELAY_EP'"
+          echo "WS_EP: '$WS_EP'"
+          echo "INSTANCE_PROFILE_ID: '$INSTANCE_PROFILE_ID'"
+          echo "CATALOG_IDS: '$CATALOG_IDS'"
+          echo "SCHEMA_IDS: '$SCHEMA_IDS'"
+          echo "EXT_LOC_IDS: '$EXT_LOC_IDS'"
+          echo "VOLUME_IDS: '$VOLUME_IDS'"
+          echo "CLUSTER_IDS: '$CLUSTER_IDS'"
+          echo "SQL_WH_IDS: '$SQL_WH_IDS'"
+          echo "SP_IDS: '$SP_IDS'"
+
+          # Always output all values, even if empty/null
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
+          echo "instance_profile_id=$INSTANCE_PROFILE_ID" >> $GITHUB_OUTPUT
+          echo "catalog_ids=$CATALOG_IDS" >> $GITHUB_OUTPUT
+          echo "schema_ids=$SCHEMA_IDS" >> $GITHUB_OUTPUT
+          echo "external_location_ids=$EXT_LOC_IDS" >> $GITHUB_OUTPUT
+          echo "volume_ids=$VOLUME_IDS" >> $GITHUB_OUTPUT
+          echo "compute_cluster_ids=$CLUSTER_IDS" >> $GITHUB_OUTPUT
+          echo "sql_warehouse_ids=$SQL_WH_IDS" >> $GITHUB_OUTPUT
+          echo "service_principal_ids=$SP_IDS" >> $GITHUB_OUTPUT
+          
+          echo "=== Workspace Outputs written to GITHUB_OUTPUT ==="
+
       # Apply Terraform to deploy Databricks Non-Workspace resources
       - name: Terraform Apply (Databricks Non-Workspace)
+        id: tf-apply-non-workspace
         if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && !endsWith(inputs.tf_dir, 'workspace') }}
         run: |
           cd ${{ inputs.tf_dir }}
@@ -374,3 +651,116 @@ jobs:
             -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
             -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}'
           fi
+          
+          # Collect all non-workspace outputs
+          if terraform output vnet_id >/dev/null 2>&1; then
+            VNET_ID=$(terraform output -raw vnet_id)
+          else
+            VNET_ID=""
+          fi
+          
+          if terraform output subnet_ids >/dev/null 2>&1; then
+            SUBNET_IDS_RAW=$(terraform output -raw subnet_ids 2>/dev/null || echo "")
+            if [ -n "$SUBNET_IDS_RAW" ]; then
+              SUBNET_IDS="$SUBNET_IDS_RAW"
+            else
+              SUBNET_IDS=$(terraform output -json subnet_ids | jq -c .)
+            fi
+          else
+            SUBNET_IDS="null"
+          fi
+          
+          if terraform output vpc_relay_endpoint_id >/dev/null 2>&1; then
+            RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id)
+          else
+            RELAY_EP=""
+          fi
+          
+          if terraform output vpc_workspace_endpoint_id >/dev/null 2>&1; then
+            WS_EP=$(terraform output -raw vpc_workspace_endpoint_id)
+          else
+            WS_EP=""
+          fi
+          
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
+          echo "instance_profile_id=$(terraform output -raw access_connector_id 2>/dev/null || echo "")" >> $GITHUB_OUTPUT
+          echo "catalog_ids=$(terraform output -json catalog_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "schema_ids=$(terraform output -json schema_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "external_location_ids=$(terraform output -json external_location_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "volume_ids=$(terraform output -json volume_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "compute_cluster_ids=$(terraform output -json compute_cluster_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "sql_warehouse_ids=$(terraform output -json sql_warehouse_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+          echo "service_principal_ids=$(terraform output -json service_principal_map 2>/dev/null | jq -c . 2>/dev/null || echo "null")" >> $GITHUB_OUTPUT
+
+      - name: Collect Terraform outputs
+        id: collect-outputs
+        if: ${{ always() }}
+        run: |
+          echo "=== STEP STARTED: Collect Terraform outputs ==="
+          echo "Current directory: $(pwd)"
+          echo "Target tf_dir: ${{ inputs.tf_dir }}"
+          cd ${{ inputs.tf_dir }}
+          echo "After cd, current directory: $(pwd)"
+          echo "=== Collecting outputs for tf_dir: ${{ inputs.tf_dir }} ==="
+          
+          # List all available terraform outputs first
+          echo "Available terraform outputs:"
+          terraform output 2>/dev/null || echo "No outputs available"
+          echo "Raw terraform output command:"
+          terraform output
+          
+          # Networking outputs
+          VNET_ID=$(terraform output -raw vnet_id 2>/dev/null || echo "")
+          SUBNET_IDS=$(terraform output -json subnet_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          RELAY_EP=$(terraform output -raw vpc_relay_endpoint_id 2>/dev/null || echo "")
+          WS_EP=$(terraform output -raw vpc_workspace_endpoint_id 2>/dev/null || echo "")
+
+          # Identity outputs
+          INSTANCE_PROFILE_ID=$(terraform output -raw access_connector_id 2>/dev/null || echo "")
+
+          # Catalogs outputs
+          CATALOG_IDS=$(terraform output -json catalog_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SCHEMA_IDS=$(terraform output -json schema_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          EXT_LOC_IDS=$(terraform output -json external_location_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          VOLUME_IDS=$(terraform output -json volume_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Compute outputs
+          CLUSTER_IDS=$(terraform output -json compute_cluster_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+          SQL_WH_IDS=$(terraform output -json sql_warehouse_ids 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Workspace permissions outputs
+          SP_IDS=$(terraform output -json service_principal_map 2>/dev/null | jq -c . 2>/dev/null || echo "null")
+
+          # Debug: Show what we collected
+          echo "=== Collected values ==="
+          echo "VNET_ID: '$VNET_ID'"
+          echo "SUBNET_IDS: '$SUBNET_IDS'"
+          echo "RELAY_EP: '$RELAY_EP'"
+          echo "WS_EP: '$WS_EP'"
+          echo "INSTANCE_PROFILE_ID: '$INSTANCE_PROFILE_ID'"
+          echo "CATALOG_IDS: '$CATALOG_IDS'"
+          echo "SCHEMA_IDS: '$SCHEMA_IDS'"
+          echo "EXT_LOC_IDS: '$EXT_LOC_IDS'"
+          echo "VOLUME_IDS: '$VOLUME_IDS'"
+          echo "CLUSTER_IDS: '$CLUSTER_IDS'"
+          echo "SQL_WH_IDS: '$SQL_WH_IDS'"
+          echo "SP_IDS: '$SP_IDS'"
+
+          # Always output all values, even if empty/null
+          echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+          echo "subnet_ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+          echo "vpc_relay_endpoint_id=$RELAY_EP" >> $GITHUB_OUTPUT
+          echo "vpc_workspace_endpoint_id=$WS_EP" >> $GITHUB_OUTPUT
+          echo "instance_profile_id=$INSTANCE_PROFILE_ID" >> $GITHUB_OUTPUT
+          echo "catalog_ids=$CATALOG_IDS" >> $GITHUB_OUTPUT
+          echo "schema_ids=$SCHEMA_IDS" >> $GITHUB_OUTPUT
+          echo "external_location_ids=$EXT_LOC_IDS" >> $GITHUB_OUTPUT
+          echo "volume_ids=$VOLUME_IDS" >> $GITHUB_OUTPUT
+          echo "compute_cluster_ids=$CLUSTER_IDS" >> $GITHUB_OUTPUT
+          echo "sql_warehouse_ids=$SQL_WH_IDS" >> $GITHUB_OUTPUT
+          echo "service_principal_ids=$SP_IDS" >> $GITHUB_OUTPUT
+          
+          echo "=== Outputs written to GITHUB_OUTPUT ==="
