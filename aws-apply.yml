@@ -1,0 +1,201 @@
+# This GitHub Actions workflow is designed to deploy required resources and plan workspace deployment.
+# It is triggered by a workflow dispatch event or a pull request to the 'main', 'test', or 'develop' branches.
+# The workflow consists of two jobs:
+# 1. set-up-environment: Sets up environment variables based on the target branch.
+# 2. terraform-planning: Runs Terraform plans to deploy VPC endpoints, S3 buckets, and create a Terraform workspace for Databricks workspace deployment.
+
+name: Terraform Apply
+run-name: Deploy version "${{ inputs.tag }}" to "${{ inputs.ENV }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Select environment to run terraform-plan
+        type: choice
+        options:
+          - dev
+          - tst
+          - prd
+          - nprd
+      tag:
+        description: Artifact to deploy
+        type: string
+
+permissions:
+  id-token: write      # This is required for requesting the JWT
+  contents: read       # This is required for actions/checkout
+  pull-requests: write # This is required to write comments to PR
+  issues: write 
+
+jobs:
+  set-env:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    outputs:
+      aws_target_role: ${{ steps.set-env.outputs.aws_target_role }}
+      region: ${{ steps.set-env.outputs.region }}
+      databricks-account-id: ${{ steps.set-env.outputs.databricks-account-id }}
+      databricks-client-id: ${{ steps.set-env.outputs.databricks-client-id }}
+      databricks-client-secret: ${{ steps.set-env.outputs.databricks-client-secret }}
+      terraform-workspace-name: ${{ steps.set-env.outputs.terraform-workspace-name }}
+      terraform-var-file-path: ${{ steps.set-env.outputs.terraform-var-file-path }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Set Env
+        id: set-env
+        run: |
+          echo "aws_target_role=${{ vars.AWS_TARGET_ACCOUNT_ROLE_ARN }}" >> $GITHUB_OUTPUT
+          echo "region=${{ vars.AWS_TARGET_REGION }}" >> $GITHUB_OUTPUT
+          echo "databricks-account-id=${{ vars.DATABRICKS_ACCOUNT_ID }}" >> $GITHUB_OUTPUT
+          echo "terraform-workspace-name=${{ vars.TERRAFORM_WORKSPACE_NAME }}" >> $GITHUB_OUTPUT
+          echo "terraform-var-file-path=${{ vars.TERRAFORM_VAR_FILE_PATH }}" >> $GITHUB_OUTPUT
+
+  workspace-bucket-apply:
+    needs: [set-env]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/db_s3_buckets_apply.yml@main
+    secrets:
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+    with:
+      lakehouse-shared-role-arn: ${{ vars.AWS_LAKEHOUSE_SHARED_ROLE_ARN }}
+      aws-region: ${{ needs.set-env.outputs.region }}
+      terraform-workspace-name: ${{ needs.set-env.outputs.terraform-workspace-name }}
+      terraform-var-file-path: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      repo: ${{ github.event.repository.name }}
+      tag: ${{ inputs.tag }}
+
+  databricks-vpc-endpoints-apply:
+    needs: [set-env]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/db_vpc_endpoints_apply.yml@main
+    secrets:
+      databricks-client-id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      databricks-client-secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+    with:
+      databricks-account-id: ${{ needs.set-env.outputs.databricks-account-id }}
+      target-role-arn: ${{ needs.set-env.outputs.aws_target_role }}
+      target-aws-region: ${{ needs.set-env.outputs.region }}
+      terraform-workspace-name: ${{ needs.set-env.outputs.terraform-workspace-name }}
+      terraform-var-file-path: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      repo: ${{ github.event.repository.name }}
+      tag: ${{ inputs.tag }}
+
+  databricks-workspace-apply:
+    needs: [set-env, workspace-bucket-apply, databricks-vpc-endpoints-apply]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
+    secrets:
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+      databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      databricks_client_secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    with:
+      databricks_account_id: ${{ needs.set-env.outputs.databricks-account-id }}
+      tf_workspace: ${{ needs.set-env.outputs.terraform-workspace-name }}-databricks-workspace
+      aws_region: ${{ needs.set-env.outputs.region }}
+      gh_repo: ${{ github.event.repository.name }}
+      target_role_arn: ${{ needs.set-env.outputs.aws_target_role }}
+      tf_dir: workspace
+      tf_file: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      cloud: aws
+      databricks_relay_endpoint_id: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_relay_endpoint_id }}
+      databricks_workspace_endpoint_id: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_workspace_endpoint_id }}
+      tag: ${{ inputs.tag }}
+
+  databricks-workspace-iam-apply:
+    needs: [set-env, databricks-workspace-apply]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
+    secrets:
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+      databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      databricks_client_secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    with:
+      databricks_account_id: ${{ needs.set-env.outputs.databricks-account-id }}
+      databricks_workspace_id: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_id }}
+      databricks_workspace_url: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}
+      tf_workspace: ${{ needs.set-env.outputs.terraform-workspace-name }}-databricks-workspace-iam
+      aws_region: ${{ needs.set-env.outputs.region }}
+      gh_repo: ${{ github.event.repository.name }}
+      target_role_arn: ${{ needs.set-env.outputs.aws_target_role }}
+      tf_dir: workspace-iam
+      tf_file: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      cloud: aws
+      tag: ${{ inputs.tag }}
+
+  databricks-catalogs-apply:
+    needs: [set-env, databricks-workspace-apply, databricks-workspace-iam-apply]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
+    secrets:
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+      databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      databricks_client_secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    with:
+      databricks_account_id: ${{ needs.set-env.outputs.databricks-account-id }}
+      databricks_workspace_url: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}
+      tf_workspace: ${{ needs.set-env.outputs.terraform-workspace-name }}-databricks-catalogs
+      aws_region: ${{ needs.set-env.outputs.region }}
+      gh_repo: ${{ github.event.repository.name }}
+      target_role_arn: ${{ needs.set-env.outputs.aws_target_role }}
+      tf_dir: catalogs
+      tf_file: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      cloud: aws
+      tag: ${{ inputs.tag }}
+
+  databricks-compute-apply:
+    needs: [set-env, databricks-workspace-apply, databricks-workspace-iam-apply, databricks-catalogs-apply]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
+    secrets:
+      RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+      databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      databricks_client_secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    with:
+      databricks_account_id: ${{ needs.set-env.outputs.databricks-account-id }}
+      databricks_workspace_url: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}
+      tf_workspace: ${{ needs.set-env.outputs.terraform-workspace-name }}-databricks-compute
+      aws_region: ${{ needs.set-env.outputs.region }}
+      gh_repo: ${{ github.event.repository.name }}
+      target_role_arn: ${{ needs.set-env.outputs.aws_target_role }}
+      tf_dir: compute
+      tf_file: ../${{ needs.set-env.outputs.terraform-var-file-path }}
+      cloud: aws
+      tag: ${{ inputs.tag }}
+
+  tf-outputs-to-domain:
+    needs: [set-env, databricks-vpc-endpoints-apply, databricks-workspace-apply, databricks-workspace-iam-apply, databricks-catalogs-apply, databricks-compute-apply]
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf_domain_outputs.yml@feature/domain
+    with:
+      environment: ${{ inputs.env }}
+      workspace_id: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_id }}
+      workspace_url: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}
+      service_principal_ids: ${{ needs.databricks-workspace-apply.outputs.service_principal_ids }}
+      vpc_relay_endpoint_id: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_relay_endpoint_id }}
+      vpc_workspace_endpoint_id: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_workspace_endpoint_id }}
+      catalog_ids: ${{ needs.databricks-catalogs-apply.outputs.catalog_ids }}
+      schema_ids: ${{ needs.databricks-catalogs-apply.outputs.schema_ids }}
+      external_location_ids: ${{ needs.databricks-catalogs-apply.outputs.external_location_ids }}
+      volume_ids: ${{ needs.databricks-catalogs-apply.outputs.volume_ids }}
+      cluster_ids: ${{ needs.databricks-compute-apply.outputs.compute_cluster_ids }}
+      sql_warehouse_ids: ${{ needs.databricks-compute-apply.outputs.sql_warehouse_ids }}
+      instance_profile_id: ${{ needs.databricks-workspace-iam-apply.outputs.databricks_instance_profile_id }}
+      target_role_arn: ${{ needs.set-env.outputs.aws_target_role }}
+      aws_region: ${{ needs.set-env.outputs.region }}
+      vnet_id: ${{ needs.databricks-workspace-apply.outputs.vnet_id }}
+      subnet_ids: ${{ needs.databricks-workspace-apply.outputs.subnet_ids }}
+
+  export-outputs:
+    needs: [set-env, workspace-bucket-apply, databricks-vpc-endpoints-apply, databricks-workspace-apply, databricks-workspace-iam-apply, databricks-catalogs-apply, databricks-compute-apply, tf-outputs-to-domain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Export All Outputs
+        run: |
+          echo "VPC Relay Endpoint ID: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_relay_endpoint_id }}"
+          echo "VPC Workspace Endpoint ID: ${{ needs.databricks-vpc-endpoints-apply.outputs.databricks_workspace_endpoint_id }}"
+          echo "Databricks Workspace URL: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}"
+          echo "Databricks Workspace ID: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_id }}"
+          echo "Service Principal IDs: ${{ needs.databricks-workspace-apply.outputs.service_principal_ids }}"
+          echo "External Location ID: ${{ needs.databricks-catalogs-apply.outputs.external_location_ids }}"
+          echo "Catalog IDs: ${{ needs.databricks-catalogs-apply.outputs.catalog_ids }}"
+          echo "Schema IDs: ${{ needs.databricks-catalogs-apply.outputs.schema_ids }}"
+          echo "Sql Warehouse ID: ${{ needs.databricks-compute-apply.outputs.sql_warehouse_ids }}"
+          echo "Compute Cluster ID: ${{ needs.databricks-compute-apply.outputs.compute_cluster_ids }}"
+          echo "Databricks Instance Profile ID: ${{ needs.databricks-workspace-iam-apply.outputs.databricks_instance_profile_id }}"
+          echo "Domain Config: ${{ needs.tf-outputs-to-domain.outputs.domain_config }}"
