@@ -67,25 +67,62 @@ jobs:
       - name: Create Complete Inventory
         id: create-config
         run: |
-          cat > securable-inventory-${{ inputs.environment }}.json << EOF
-          {
-            "workspace_id": "${{ inputs.workspace_id }}",
-            "workspace_url": "${{ inputs.workspace_url }}",
-            "service_principal_ids": ${{ inputs.service_principal_ids || 'null' }},
-            "vpc_relay_endpoint_id": "${{ inputs.vpc_relay_endpoint_id }}",
-            "vpc_workspace_endpoint_id": "${{ inputs.vpc_workspace_endpoint_id }}",
-            "catalog_ids": ${{ inputs.catalog_ids || 'null' }},
-            "schema_ids": ${{ inputs.schema_ids || 'null' }},
-            "external_location_ids": ${{ inputs.external_location_ids || 'null' }},
-            "volume_ids": ${{ inputs.volume_ids || 'null' }},
-            "cluster_ids": ${{ inputs.cluster_ids || 'null' }},
-            "sql_warehouse_ids": ${{ inputs.sql_warehouse_ids || 'null' }},
-            "instance_profile_id": "${{ inputs.instance_profile_id }}",
-            "vnet_id": "${{ inputs.vnet_id }}",
-            "subnet_ids": "${{ inputs.subnet_ids }}"
-          }
-          EOF
-          DOMAIN_CONFIG=$(cat securable-inventory-${{ inputs.environment }}.json | jq -c .)
+          echo "=== Received inputs for domain integration ==="
+          echo "environment: ${{ inputs.environment }}"
+          echo "workspace_id: ${{ inputs.workspace_id }}"
+          echo "workspace_url: ${{ inputs.workspace_url }}"
+          echo "service_principal_ids: ${{ inputs.service_principal_ids }}"
+          echo "vpc_relay_endpoint_id: ${{ inputs.vpc_relay_endpoint_id }}"
+          echo "vpc_workspace_endpoint_id: ${{ inputs.vpc_workspace_endpoint_id }}"
+          echo "catalog_ids: ${{ inputs.catalog_ids }}"
+          echo "schema_ids: ${{ inputs.schema_ids }}"
+          echo "external_location_ids: ${{ inputs.external_location_ids }}"
+          echo "volume_ids: ${{ inputs.volume_ids }}"
+          echo "cluster_ids: ${{ inputs.cluster_ids }}"
+          echo "sql_warehouse_ids: ${{ inputs.sql_warehouse_ids }}"
+          echo "instance_profile_id: ${{ inputs.instance_profile_id }}"
+          echo "vnet_id: ${{ inputs.vnet_id }}"
+          echo "subnet_ids: ${{ inputs.subnet_ids }}"
+          echo "================================================"
+          
+          # Create JSON using jq to properly handle input values
+          jq -n \
+            --arg workspace_id "${{ inputs.workspace_id }}" \
+            --arg workspace_url "${{ inputs.workspace_url }}" \
+            --argjson service_principal_ids '${{ inputs.service_principal_ids }}' \
+            --arg vpc_relay_endpoint_id "${{ inputs.vpc_relay_endpoint_id }}" \
+            --arg vpc_workspace_endpoint_id "${{ inputs.vpc_workspace_endpoint_id }}" \
+            --argjson catalog_ids '${{ inputs.catalog_ids && inputs.catalog_ids || 'null' }}' \
+            --argjson schema_ids '${{ inputs.schema_ids && inputs.schema_ids || 'null' }}' \
+            --argjson external_location_ids '${{ inputs.external_location_ids && inputs.external_location_ids || 'null' }}' \
+            --argjson volume_ids '${{ inputs.volume_ids && inputs.volume_ids || 'null' }}' \
+            --argjson cluster_ids '${{ inputs.cluster_ids && inputs.cluster_ids || 'null' }}' \
+            --argjson sql_warehouse_ids '${{ inputs.sql_warehouse_ids && inputs.sql_warehouse_ids || 'null' }}' \
+            --arg instance_profile_id "${{ inputs.instance_profile_id }}" \
+            --arg vnet_id "${{ inputs.vnet_id }}" \
+            --argjson subnet_ids '${{ inputs.subnet_ids && inputs.subnet_ids || 'null' }}' \
+            '{
+              workspace_id: $workspace_id,
+              workspace_url: $workspace_url,
+              service_principal_ids: $service_principal_ids,
+              vpc_relay_endpoint_id: $vpc_relay_endpoint_id,
+              vpc_workspace_endpoint_id: $vpc_workspace_endpoint_id,
+              catalog_ids: $catalog_ids,
+              schema_ids: $schema_ids,
+              external_location_ids: $external_location_ids,
+              volume_ids: $volume_ids,
+              cluster_ids: $cluster_ids,
+              sql_warehouse_ids: $sql_warehouse_ids,
+              instance_profile_id: $instance_profile_id,
+              vnet_id: $vnet_id,
+              subnet_ids: $subnet_ids
+            }' > securable-inventory-${{ inputs.environment }}.json
+          
+          echo "=== Generated JSON ==="
+          cat securable-inventory-${{ inputs.environment }}.json
+          echo "====================="
+          
+          DOMAIN_CONFIG=$(jq -c . securable-inventory-${{ inputs.environment }}.json)
           echo "domain_config=$DOMAIN_CONFIG" >> $GITHUB_OUTPUT
       - name: OIDC Login to AWS
         uses: aws-actions/configure-aws-credentials@v2
