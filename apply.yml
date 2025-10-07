@@ -55,7 +55,7 @@ jobs:
   # Azure Identity
   azure-identity-apply:
     needs: [set-env]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
     with:
@@ -73,7 +73,7 @@ jobs:
   # Azure Networking
   azure-networking-apply:
     needs: [set-env]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
     with:
@@ -91,7 +91,7 @@ jobs:
   # Azure Permissions
   azure-permissions-apply:
     needs: [set-env]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
     with:
@@ -109,7 +109,7 @@ jobs:
   # Databricks Workspace
   databricks-workspace-apply:
     needs: [set-env, azure-identity-apply, azure-networking-apply, azure-permissions-apply]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
       databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
@@ -130,7 +130,7 @@ jobs:
   # Databricks Workspace Permissions
   databricks-workspace-permissions-apply:
     needs: [set-env, databricks-workspace-apply]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
       databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
@@ -153,7 +153,7 @@ jobs:
   # Databricks Compute
   databricks-compute-apply:
     needs: [set-env, databricks-workspace-apply, databricks-workspace-permissions-apply]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
       databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
@@ -176,7 +176,7 @@ jobs:
   # Databricks Catalogs
   databricks-catalogs-apply:
     needs: [set-env, databricks-workspace-apply, databricks-workspace-permissions-apply]
-    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@main
+    uses: rio-tinto/rtlh-github-actions/.github/workflows/tf-apply.yml@feature/domain
     secrets:
       RIOTINTO_ORG_TOKEN: ${{ secrets.RIOTINTO_ORG_TOKEN }}
       databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
@@ -202,23 +202,23 @@ jobs:
     with:
       environment: ${{ inputs.env }}
       vnet_id: ${{ needs.azure-networking-apply.outputs.vnet_id }}
-      subnet_ids: ${{ needs.azure-networking-apply.outputs.subnet_ids }}
+      subnet_ids: ${{ toJSON(needs.azure-networking-apply.outputs.subnet_ids) }}
       workspace_id: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_id }}
       workspace_url: ${{ needs.databricks-workspace-apply.outputs.databricks_workspace_url }}
-      catalog_ids: ${{ needs.databricks-catalogs-apply.outputs.catalog_ids }}
-      schema_ids: ${{ needs.databricks-catalogs-apply.outputs.schema_ids }}
-      external_location_ids: ${{ needs.databricks-catalogs-apply.outputs.external_location_ids }}
-      volume_ids: ${{ needs.databricks-catalogs-apply.outputs.volume_ids }}
-      cluster_ids: ${{ needs.databricks-compute-apply.outputs.compute_cluster_ids }}
-      sql_warehouse_ids: ${{ needs.databricks-compute-apply.outputs.sql_warehouse_ids }}
-      service_principal_ids: ${{ needs.databricks-workspace-permissions-apply.outputs.service_principal_ids }}
+      catalog_ids: ${{ toJSON(needs.databricks-catalogs-apply.outputs.catalog_ids) }}
+      schema_ids: ${{ toJSON(needs.databricks-catalogs-apply.outputs.schema_ids) }}
+      external_location_ids: ${{ toJSON(needs.databricks-catalogs-apply.outputs.external_location_ids) }}
+      volume_ids: ${{ toJSON(needs.databricks-catalogs-apply.outputs.volume_ids) }}
+      cluster_ids: ${{ toJSON(needs.databricks-compute-apply.outputs.compute_cluster_ids) }}
+      sql_warehouse_ids: ${{ toJSON(needs.databricks-compute-apply.outputs.sql_warehouse_ids) }}
+      service_principal_ids: ${{ toJSON(needs.databricks-workspace-permissions-apply.outputs.service_principal_ids) }}
       vpc_relay_endpoint_id: ${{ needs.azure-networking-apply.outputs.vpc_relay_endpoint_id }}
       vpc_workspace_endpoint_id: ${{ needs.databricks-workspace-apply.outputs.vpc_workspace_endpoint_id }}
       instance_profile_id: ${{ needs.azure-identity-apply.outputs.instance_profile_id }}
       target_role_arn: ${{ needs.set-env.outputs.target_role_arn }}
 
   export-outputs:
-    needs: [set-env, azure-identity-apply, azure-networking-apply, databricks-workspace-apply, databricks-workspace-permissions-apply, databricks-catalogs-apply]
+    needs: [set-env, azure-identity-apply, azure-networking-apply, databricks-workspace-apply, databricks-workspace-permissions-apply, databricks-catalogs-apply, databricks-compute-apply]
     runs-on: ubuntu-latest
     steps:
       - name: Export All Outputs
