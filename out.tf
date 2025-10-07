@@ -157,3 +157,47 @@ output "service_principal_ids" {
   description = "Map of service principal names to their application IDs"
   value       = module.workspace-permissions.service_principal_ids
 }
+
+
+
+
+
+Run echo "=== Received inputs for domain integration ==="
+=== Received inputs for domain integration ===
+environment: dev
+workspace_id: 1510274096129198
+workspace_url: https://dbc-ebaaaba6-6e81.cloud.databricks.com
+service_principal_ids: null
+vpc_relay_endpoint_id: 65703a07-d5b7-4085-95c2-c5897e7426e2
+vpc_workspace_endpoint_id: 5e7a995d-7027-40e8-b248-c464f9af7ccb
+catalog_ids: null
+schema_ids: null
+external_location_ids: null
+volume_ids: null
+cluster_ids: [0509-063052-8tyee1aq]
+sql_warehouse_ids: [a740a214e19132d0]
+instance_profile_id: 
+vnet_id: ::error::Terraform exited with code 1.
+subnet_ids: null
+================================================
+=== Generated JSON ===
+{
+  "workspace_id": "1510274096129198",
+  "workspace_url": "https://dbc-ebaaaba6-6e81.cloud.databricks.com",
+  "service_principal_ids": null,
+  "vpc_relay_endpoint_id": "65703a07-d5b7-4085-95c2-c5897e7426e2",
+  "vpc_workspace_endpoint_id": "5e7a995d-7027-40e8-b248-c464f9af7ccb",
+  "catalog_ids": null,
+  "schema_ids": null,
+  "external_location_ids": null,
+  "volume_ids": null,
+  "cluster_ids": [
+    "0509-063052-8tyee1aq"
+  ],
+  "sql_warehouse_ids": [
+    "a740a214e19132d0"
+  ],
+  "instance_profile_id": "",
+  "vnet_id": "::error::Terraform exited with code 1.",
+  "subnet_ids": null
+}
