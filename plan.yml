@@ -1,0 +1,479 @@
+name: Terraform plan
+
+on:
+  workflow_call:
+    inputs:
+      tf_workspace:
+        required: true
+        type: string
+      aws_region:
+        required: false
+        type: string
+        default: "ap-southeast-2"
+      gh_repo:
+        type: string
+        required: true
+      databricks_account_id:
+        type: string
+        required: false
+      target_role_arn:
+        type: string
+        required: true
+      tf_dir:
+        required: true
+        type: string
+      tf_file:
+        required: true
+        type: string
+      cloud:
+        required: true
+        type: string
+      workspace_s3_bucket_name:
+        required: false
+        type: string
+      databricks_relay_endpoint_id:
+        required: false
+        type: string
+      databricks_workspace_endpoint_id:
+        required: false
+        type: string
+      databricks_workspace_id:
+        required: false
+        type: string
+      databricks_workspace_url:
+        required: false
+        type: string
+      azure_client_id:
+        required: false
+        type: string
+      azure_sub_id:
+        required: false
+        type : string
+      azure_tenant_id:
+        required: false
+        type: string
+      storage_account_name:
+        required: false
+        type: string
+      vnet_id:
+        required: false
+        type: string
+      subnet_id:
+        required: false
+        type: string
+
+    secrets:
+      RIOTINTO_ORG_TOKEN:
+        required: true
+      CUSTOM_GITHUB_TOKEN:
+        required: false
+      databricks_client_id:
+        required: false
+      databricks_client_secret:
+        required: false
+
+    outputs:
+      aws_databricks_workspace_id:
+        description: "AWS Databricks id"
+        value: ${{ jobs.aws-terraform-plan.outputs.databricks_workspace_id }}
+      azure_databricks_workspace_id:
+        description: "Azure Databricks id"
+        value: ${{ jobs.azure-terraform-plan.outputs.databricks_workspace_id }}
+      databricks_workspace_id:
+        description: "Databricks workspace id (AWS or Azure)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-plan.outputs.databricks_workspace_id || jobs.azure-terraform-plan.outputs.databricks_workspace_id }}
+      databricks_workspace_url:
+        description: "Databricks workspace URL (AWS or Azure)"
+        value: ${{ inputs.cloud == 'aws' && jobs.aws-terraform-plan.outputs.databricks_workspace_url || jobs.azure-terraform-plan.outputs.databricks_workspace_url }}
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+jobs:
+
+################################################################################
+# AWS Terraform Plan
+################################################################################
+
+  aws-terraform-plan:
+    if: ${{ inputs.cloud == 'aws' }}
+    runs-on: ubuntu-latest
+
+    outputs:
+      databricks_workspace_id: ${{ steps.tfPlan.outputs.databricks_workspace_id }}
+      databricks_workspace_url: ${{ steps.tfPlan.outputs.databricks_workspace_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: rio-tinto/${{ inputs.gh_repo }}
+
+      - name: Configure GitHub credentials
+        run: |
+          git config --global url."https://${{ secrets.RIOTINTO_ORG_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git config --list
+        working-directory: "${{ inputs.tf_dir }}"
+
+      # Login to AWS
+      - name: OIDC Login to AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ inputs.target_role_arn }}
+          role-session-name: DNA-Automation-Github-Actions-Role
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3.1.1
+
+      - name: Initialize Terraform working directory
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform init
+
+      - name: Create or Select Workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          WORKSPACE="${{ inputs.tf_workspace }}"
+          
+          # Check if workspace exists
+          if terraform workspace list | grep -q "$WORKSPACE"; then
+            echo "Workspace $WORKSPACE already exists, selecting it"
+            terraform workspace select $WORKSPACE
+          else
+            echo "Creating new workspace $WORKSPACE"
+            terraform workspace new $WORKSPACE
+          fi
+
+      - name: Terraform Plan
+        if: ${{ inputs.databricks_account_id != '782ba817-b9bf-4033-9aa9-56bb80139fba' }}
+        env:
+          TF_VAR_github_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file=${{ inputs.tf_file }} -out=tfplan
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR
+        if: ${{ github.event_name == 'pull_request' && inputs.databricks_account_id != '782ba817-b9bf-4033-9aa9-56bb80139fba' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const planOutput = fs.readFileSync(path.join('${{ inputs.tf_dir }}', 'plan_output.txt'), 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      - name: Terraform Plan Databricks Workspace
+        id: tfPlan
+        if: ${{ inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file='${{ inputs.tf_file }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+          -var 'databricks_workspace_endpoint_id=${{ inputs.databricks_workspace_endpoint_id }}' \
+          -var 'databricks_relay_endpoint_id=${{ inputs.databricks_relay_endpoint_id }}' \
+          -out=tfplan
+          terraform show -no-color tfplan > plan_output.txt
+
+          echo "databricks_workspace_id=$(terraform output -raw databricks_workspace_id)" >> $GITHUB_OUTPUT
+          echo "databricks_workspace_url=$(terraform output -raw databricks_workspace_url)" >> $GITHUB_OUTPUT
+
+      - name: Comment PR Databricks Workspace
+        if: ${{ github.event_name == 'pull_request' && inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const planOutput = fs.readFileSync(path.join('${{ inputs.tf_dir }}', 'plan_output.txt'), 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Databricks Workspace)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      - name: Terraform Plan Databricks Workspace Iam
+        if: ${{  inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace-iam' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file='${{ inputs.tf_file }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+          -var 'databricks_workspace_id=${{ inputs.databricks_workspace_id }}' \
+          -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}' \
+          -out=tfplan
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR Databricks Workspace IAM
+        if: ${{ github.event_name == 'pull_request' && inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'workspace-iam' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const planOutput = fs.readFileSync(path.join('${{ inputs.tf_dir }}', 'plan_output.txt'), 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Databricks Workspace IAM)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      - name: Terraform Plan Databricks Catalogs
+        if: ${{  inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'catalogs' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file='${{ inputs.tf_file }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+          -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}' \
+          -out=tfplan
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR Databricks Catalogs
+        if: ${{ github.event_name == 'pull_request' && inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'catalogs' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const planOutput = fs.readFileSync(path.join('${{ inputs.tf_dir }}', 'plan_output.txt'), 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Databricks Catalogs)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      - name: Terraform Plan Databricks Compute
+        if: ${{  inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'compute' }}
+        env:
+          DATABRICKS_HOST: "https://accounts.cloud.databricks.com"
+          DATABRICKS_ACCOUNT_ID: ${{ inputs.databricks_account_id }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.databricks_client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.databricks_client_secret }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file='${{ inputs.tf_file }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+          -var 'databricks_workspace_url=${{ inputs.databricks_workspace_url }}' \
+          -out=tfplan
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR Databricks Compute
+        if: ${{ github.event_name == 'pull_request' && inputs.databricks_account_id == '782ba817-b9bf-4033-9aa9-56bb80139fba' && inputs.tf_dir == 'compute' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const planOutput = fs.readFileSync(path.join('${{ inputs.tf_dir }}', 'plan_output.txt'), 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Databricks Compute)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+################################################################################
+# Azure Terraform Plan
+################################################################################
+
+  azure-terraform-plan:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.cloud == 'az' }}
+
+    outputs:
+      databricks_workspace_id: ${{ steps.tf-plan-workspace.outputs.databricks_workspace_id }}
+      databricks_workspace_url: ${{ steps.tf-plan-workspace.outputs.databricks_workspace_url }}
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v4
+        with: 
+          repository: rio-tinto/${{ inputs.gh_repo }}
+
+      # Configure Github Creds
+      - name: Configure GitHub credentials
+        run: |
+          git config --global url."https://${{ secrets.RIOTINTO_ORG_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          git config --list
+        working-directory: "${{ inputs.tf_dir }}"  
+
+ 
+      # Authenticate to Azure using Service Principal
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ inputs.azure_client_id }}
+          tenant-id: ${{ inputs.azure_tenant_id }}
+          subscription-id: ${{ inputs.azure_sub_id }}
+
+      - name: Azure Account Show
+        run: |
+          az account show
+
+      # Install Terraform CLI
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3.1.1
+
+      # Initialize the Terraform working directory
+      - name: Initialize Terraform working directory
+        env: 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform init
+
+      # Create or Select Terraform workspace
+      - name: Create or Select Workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          WORKSPACE="${{ inputs.tf_workspace }}"
+
+          # Check if workspace exists
+          if terraform workspace list | grep -q "$WORKSPACE"; then
+            echo "Workspace $WORKSPACE already exists, selecting it"
+            terraform workspace select $WORKSPACE
+          else
+            echo "Creating new workspace $WORKSPACE"
+            terraform workspace new $WORKSPACE
+          fi
+
+      # Plan Terraform to deploy Azure Infra resources
+      - name: Terraform Plan (Azure Infra)
+        if: ${{ !inputs.databricks_account_id }}
+        id: tf-plan-azure-infra
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file=${{ inputs.tf_file }} \
+          -out=tfplan
+
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR (Azure Infra)
+        if: ${{ github.event_name == 'pull_request' && !inputs.databricks_account_id }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ inputs.tf_dir }}/plan_output.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Azure)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      # Plan Terraform to deploy Databricks Workspace resources
+      - name: Terraform Plan (Databricks Workspace)
+        if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && endsWith(inputs.tf_dir, 'workspace') }}
+        id: tf-plan-workspace
+        run: |
+          cd ${{ inputs.tf_dir }}
+          terraform plan -var-file='${{ inputs.tf_file }}' \
+          -var 'databricks_account_id=${{ inputs.databricks_account_id }}' \
+          -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+          -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+          -out=tfplan
+
+          terraform show -no-color tfplan > plan_output.txt
+
+          echo "databricks_workspace_id=$(terraform output -raw workspace_id)" >> $GITHUB_OUTPUT
+          echo "databricks_workspace_url=$(terraform output -raw workspace_url)" >> $GITHUB_OUTPUT
+
+      - name: Comment PR (Databricks Workspace)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ inputs.tf_dir }}/plan_output.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Azure)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
+
+      # Plan Terraform to deploy Databricks Non-Workspace resources
+      - name: Terraform Plan (Databricks Non-Workspace)
+        if: ${{ inputs.databricks_account_id == 'fe1630db-b2af-4ac1-a394-9f0e33096a57' && !endsWith(inputs.tf_dir, 'workspace') }}
+        run: |
+          cd ${{ inputs.tf_dir }}
+          if [[ "${{ inputs.tf_dir }}" == *"compute"* || "${{ inputs.tf_dir }}" == *"catalogs"* ]]; then
+            terraform plan -var-file='${{ inputs.tf_file }}' \
+            -var databricks_workspace_url=${{ inputs.databricks_workspace_url }} \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -out=tfplan
+          else
+            terraform plan -var-file='${{ inputs.tf_file }}' \
+            -var databricks_account_id=${{ inputs.databricks_account_id }} \
+            -var databricks_workspace_id=${{ inputs.databricks_workspace_id }} \
+            -var databricks_workspace_url=${{ inputs.databricks_workspace_url }} \
+            -var 'databricks_client_id=${{ secrets.databricks_client_id }}' \
+            -var 'databricks_client_secret=${{ secrets.databricks_client_secret }}' \
+            -out=tfplan
+          fi
+
+          terraform show -no-color tfplan > plan_output.txt
+
+      - name: Comment PR (Databricks Non-Workspace)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RIOTINTO_ORG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ inputs.tf_dir }}/plan_output.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Output (Azure)\n\n**Directory:** \`${{ inputs.tf_dir }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n\n</details>`
+            });
